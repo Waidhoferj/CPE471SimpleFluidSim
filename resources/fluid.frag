@@ -3,11 +3,12 @@ precision highp float;
 precision highp sampler2D;
 
 in vec2 vUv;
+uniform vec4 fluidColor;
 uniform sampler2D uDensity;
 
 out vec4 outColor;
 
 void main() {
-    float density =texture(uDensity, vUv).r / 255.0;
-    outColor = vec4(0.3,0.7,0.1, density);
+    float density = texture(uDensity, vUv).r;
+    outColor = vec4(density) * fluidColor;
 }

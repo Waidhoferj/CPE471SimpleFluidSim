@@ -1,57 +1,45 @@
 import * as twgl from "twgl.js";
 import dat from "dat.gui";
-import drawVert from "../resources/draw.vert";
-import drawFrag from "../resources/draw.frag";
-const settings = {
-  cellSize: 4,
+import textureFrag from "../resources/texture.vert";
+import fluidFrag from "../resources/fluid.frag";
+import Repulser from "./Repulser";
+import Attractor from "./Attractor";
+const settings: SimSettings = {
+  cellSize: 3,
+  gridSize: 0,
   timeStep: 0.4,
-  dissipation: 0.8,
+  dissipation: 0.4,
   viscosity: 0,
   diffusion: 0,
   iteration: 6,
   blur: 0,
-  emitterSpeed: 250,
+  emissionRate: 1,
   separation: 5,
+  splatRadius: 4,
+  color: [255, 255, 255, 1],
+  fluidColor: [1, 1, 1, 1],
 };
+const mouseTexel: [number, number] = [0, 0];
+const repulsers: Repulser[] = [];
+const attractors: Attractor[] = [];
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
-let gridSize: number;
-let canvasRect: DOMRect;
 onResize();
 const gl = canvas.getContext("webgl2");
 twgl.addExtensionsToContext(gl);
+const drawProgram = twgl.createProgramInfo(gl, [textureFrag, fluidFrag]);
+const densityTextureOptions = {
+  target: gl.TEXTURE_2D,
+  wrap: gl.CLAMP_TO_EDGE,
+  minMag: gl.NEAREST,
+  format: gl.RED,
+  internalFormat: gl.R16F,
+};
+let densityFramebuffer: twgl.FramebufferInfo;
+let pathFBO: twgl.FramebufferInfo;
 
-const drawProgram = twgl.createProgramInfo(gl, [drawVert, drawFrag]);
-gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-gl.bufferData(
-  gl.ARRAY_BUFFER,
-  new Float32Array([-1, -1, -1, 1, 1, 1, 1, -1]),
-  gl.STATIC_DRAW
-);
-gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
-gl.bufferData(
-  gl.ELEMENT_ARRAY_BUFFER,
-  new Uint16Array([0, 1, 2, 0, 2, 3]),
-  gl.STATIC_DRAW
-);
-gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-gl.enableVertexAttribArray(0);
-const densityBufferAttachments = [
-  {
-    target: gl.TEXTURE_2D,
-    wrap: gl.CLAMP_TO_EDGE,
-    minMag: gl.NEAREST,
-    format: gl.RED,
-    internalFormat: gl.R16F,
-  },
-];
-const densityFramebuffer = twgl.createFramebufferInfo(
-  gl,
-  densityBufferAttachments,
-  gridSize,
-  gridSize
-);
+const IX = (x: number, y: number) => x + y * settings.gridSize;
 
-const IX = (x: number, y: number) => x + y * gridSize;
+init();
 
 class Fluid {
   size: number;
@@ -66,7 +54,7 @@ class Fluid {
   Vy0: number[];
 
   constructor() {
-    const gSize = gridSize ** 2;
+    const gSize = settings.gridSize ** 2;
     this.s = new Array(gSize).fill(0);
     this.density = new Array(gSize).fill(0);
     this.Vx = new Array(gSize).fill(0);
@@ -76,14 +64,21 @@ class Fluid {
     twgl.resizeFramebufferInfo(
       gl,
       densityFramebuffer,
-      densityBufferAttachments,
-      gridSize,
-      gridSize
+      [densityTextureOptions],
+      settings.gridSize,
+      settings.gridSize
     );
   }
 
   addDye(x: number, y: number, amount: number) {
-    this.density[IX(x, y)] += amount;
+    let dx: number, dy: number;
+    let a = amount / 2 / settings.splatRadius;
+    for (dy = -settings.splatRadius; dy < settings.splatRadius; dy++)
+      for (dx = -settings.splatRadius; dx < settings.splatRadius; dx++) {
+        if (this.density[IX(dx + x, dy + y)] + a < 255) {
+          this.density[IX(dx + x, dy + y)] += a;
+        }
+      }
   }
 
   addVelocity(i: number, j: number, amountX: number, amountY: number) {
@@ -97,24 +92,27 @@ class Fluid {
     const dt = settings.timeStep;
     const iter = settings.iteration;
     const diff = settings.diffusion;
-    diffuse(1, this.Vx0, this.Vx, visc, dt, iter, gridSize);
-    diffuse(2, this.Vy0, this.Vy, visc, dt, iter, gridSize);
+    diffuse(1, this.Vx0, this.Vx, visc, dt, iter, settings.gridSize);
+    diffuse(2, this.Vy0, this.Vy, visc, dt, iter, settings.gridSize);
 
-    project(this.Vx0, this.Vy0, this.Vx, this.Vy, iter, gridSize);
+    project(this.Vx0, this.Vy0, this.Vx, this.Vy, iter, settings.gridSize);
 
-    advect(1, this.Vx, this.Vx0, this.Vx0, this.Vy0, dt, gridSize);
-    advect(2, this.Vy, this.Vy0, this.Vx0, this.Vy0, dt, gridSize);
+    advect(1, this.Vx, this.Vx0, this.Vx0, this.Vy0, dt, settings.gridSize);
+    advect(2, this.Vy, this.Vy0, this.Vx0, this.Vy0, dt, settings.gridSize);
 
-    project(this.Vx, this.Vy, this.Vx0, this.Vy0, iter, gridSize);
+    project(this.Vx, this.Vy, this.Vx0, this.Vy0, iter, settings.gridSize);
 
     // step the Dye
-    diffuse(0, this.s, this.density, diff, dt, iter, gridSize);
-    advect(0, this.density, this.s, this.Vx, this.Vy, dt, gridSize);
+    diffuse(0, this.s, this.density, diff, dt, iter, settings.gridSize);
+    advect(0, this.density, this.s, this.Vx, this.Vy, dt, settings.gridSize);
   }
 
   dissipate() {
     for (let i = 0; i < this.density.length; i++) {
-      this.density[i] = Math.max(this.density[i] - settings.dissipation, 0);
+      this.density[i] = Math.max(
+        this.density[i] - settings.dissipation * 0.001,
+        0
+      );
     }
   }
 
@@ -123,15 +121,7 @@ class Fluid {
       gl,
       densityFramebuffer.attachments[0],
       this.density,
-      {
-        target: gl.TEXTURE_2D,
-        width: gridSize,
-        height: gridSize,
-        wrap: gl.CLAMP_TO_EDGE,
-        minMag: gl.NEAREST,
-        format: gl.RED,
-        internalFormat: gl.R16F,
-      }
+      densityTextureOptions
     );
 
     twgl.setUniforms(drawProgram, {
@@ -295,6 +285,30 @@ function setBounds(b: number, x: number[], N: number) {
 }
 
 function init() {
+  // Create quad for 2D scene
+  onResize();
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(
+    gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, -1, 1, 1, 1, 1, -1]),
+    gl.STATIC_DRAW
+  );
+  // Create normals
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(
+    gl.ELEMENT_ARRAY_BUFFER,
+    new Uint16Array([0, 1, 2, 0, 2, 3]),
+    gl.STATIC_DRAW
+  );
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(0);
+
+  densityFramebuffer = twgl.createFramebufferInfo(
+    gl,
+    [densityTextureOptions],
+    settings.gridSize,
+    settings.gridSize
+  );
   setupGui();
   createEvents();
 }
@@ -303,26 +317,33 @@ function createEvents() {
   let pressed = false;
   window.addEventListener("resize", onResize);
   canvas.addEventListener("mousemove", addCursorDye);
-  canvas.addEventListener("mouseup", onMouseUp);
-  canvas.addEventListener("mousedown", onMouseDown);
-  function addCursorDye(e: MouseEvent) {
-    if (!pressed) return;
-    let y = canvas.height - e.offsetY;
-    let dy = -e.movementY;
-    let j = Math.floor(e.offsetX / settings.cellSize);
-    let i = Math.floor(y / settings.cellSize);
-    let speed = Math.sqrt(e.movementX ** 2 + dy ** 2);
-    let a = Math.min(speed / 7, 10);
+  canvas.addEventListener("mouseup", stopEmitting);
+  canvas.addEventListener("mouseleave", stopEmitting);
+  canvas.addEventListener("mousedown", startEmitting);
+  canvas.addEventListener("click", addRepulser);
 
-    fluid.addDye(j, i, settings.emitterSpeed * a);
-    fluid.addVelocity(i, j, e.movementX, dy);
+  function addCursorDye(e: MouseEvent) {
+    let j = Math.floor(e.offsetX / settings.cellSize);
+    let i = Math.floor((canvas.height - e.offsetY) / settings.cellSize);
+    fluid.addVelocity(j, i, e.movementX, -e.movementY);
+    if (!pressed) return;
+    fluid.addDye(j, i, settings.emissionRate);
   }
 
-  function onMouseDown() {
+  function addRepulser(e: MouseEvent) {
+    if (!e.metaKey) return;
+    let j = Math.floor(e.offsetX / settings.cellSize);
+    let i = Math.floor((canvas.height - e.offsetY) / settings.cellSize);
+    console.log("added repulser");
+    // repulsers.push(new Repulser(j, i, 3, 10, settings));
+    attractors.push(new Attractor(j, i, 70, 5, settings));
+  }
+
+  function startEmitting() {
     pressed = true;
   }
 
-  function onMouseUp() {
+  function stopEmitting() {
     pressed = false;
   }
 }
@@ -331,11 +352,14 @@ function setupGui() {
   let gui = new dat.GUI();
   gui.add(settings, "cellSize", 1, 20, 1).onChange(reload);
   gui.add(settings, "timeStep", 0, 1, 0.001);
-  gui.add(settings, "dissipation", 0, 1, 0.001);
+  gui.add(settings, "dissipation", 0, 100);
   gui.add(settings, "viscosity", 0, 0.1, 0.0001);
-  gui.add(settings, "diffusion", 0, 1, 0.0001);
   gui.add(settings, "iteration", 1, 25, 1);
-  gui.add(settings, "emitterSpeed", 50, 500);
+  gui.add(settings, "emissionRate", 0, 10);
+  gui.add(settings, "splatRadius", 1, 25, 1);
+  gui
+    .addColor(settings, "color")
+    .onChange((val) => (settings.fluidColor = val.map((v: number) => v / 255)));
   gui
     .add(settings, "blur", 0, 20, 1)
     .onChange((val) =>
@@ -350,10 +374,9 @@ function setupGui() {
 
 function onResize() {
   const size = Math.min(window.innerWidth, window.innerHeight);
-  gridSize = Math.ceil(size / settings.cellSize);
+  settings.gridSize = Math.ceil(size / settings.cellSize);
   canvas.width = size;
   canvas.height = size;
-  canvasRect = canvas.getBoundingClientRect();
 }
 
 function reload() {
@@ -366,10 +389,13 @@ function render(t: number) {
   gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
   gl.useProgram(drawProgram.program);
   fluid.step();
-
+  twgl.setUniforms(drawProgram, {
+    fluidColor: settings.fluidColor,
+  });
+  repulsers.forEach((r) => r.applyForce(fluid.Vx, fluid.Vy));
+  attractors.forEach((a) => a.applyForce(fluid.Vx, fluid.Vy));
   fluid.renderDensity();
   fluid.dissipate();
 }
 
-init();
 requestAnimationFrame(render);

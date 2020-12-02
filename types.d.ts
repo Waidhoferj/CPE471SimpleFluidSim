@@ -1,0 +1,15 @@
+type SimSettings {
+    cellSize:number,
+    gridSize: number,
+    timeStep: number,
+    dissipation: number,
+    viscosity: number,
+    diffusion: number,
+    iteration: number,
+    blur: number,
+    emissionRate: number,
+    separation: number,
+    splatRadius: number,
+    color: number[],
+    fluidColor: number[],
+  }
