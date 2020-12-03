@@ -21,3 +21,52 @@ body {
   display: block;
   filter: blur(var(--canvas-blur));
 }
+
+.indicator {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: center;
+  width: 50px;
+  height: 50px;
+  border-width: 2px;
+  border-style: solid;
+  border-color: white;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.attractor-indicator {
+  animation: attract 1s infinite ease-out;
+}
+
+.repulser-indicator {
+  animation: repulse 1s infinite ease-out;
+}
+
+.active {
+  display: block;
+}
+
+@keyframes attract {
+  from {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 1;
+  }
+}
+
+@keyframes repulse {
+  from {
+    transform: translate(-50%, -50%) scale(0);
+  }
+  to {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0;
+  }
+}

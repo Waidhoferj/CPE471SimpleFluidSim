@@ -1,6 +1,6 @@
 import * as twgl from "twgl.js";
 import dat from "dat.gui";
-import textureFrag from "../resources/texture.vert";
+import textureVert from "../resources/texture.vert";
 import fluidFrag from "../resources/fluid.frag";
 import Repulser from "./Repulser";
 import Attractor from "./Attractor";
@@ -11,22 +11,34 @@ const settings: SimSettings = {
   dissipation: 0.4,
   viscosity: 0,
   diffusion: 0,
-  iteration: 6,
+  iteration: 2,
   blur: 0,
   emissionRate: 1,
   separation: 5,
-  splatRadius: 4,
-  color: [255, 255, 255, 1],
-  fluidColor: [1, 1, 1, 1],
+  emitterSize: 4,
+  color: [255, 255, 255],
+  fluidColor: [1, 1, 1],
+  attractorForce: 5,
+  attractorRadius: 70,
+  repulserForce: 5,
+  repulserRadius: 70,
+  addAttractor: () => setClickAction("attractor"),
+  addRepulser: () => setClickAction("repulser"),
+  clearAllObjects,
 };
-const mouseTexel: [number, number] = [0, 0];
-const repulsers: Repulser[] = [];
-const attractors: Attractor[] = [];
+type ClickAction = "smoke" | "repulser" | "attractor" | "pillar";
+let clickAction: ClickAction = "smoke";
+let activeIndicator: HTMLElement = null;
+
+let repulsers: Repulser[] = [];
+let attractors: Attractor[] = [];
+let pillars: Repulser[] = [];
+let pillarPoints = [1.0, 1.0, 1.0, 1.0];
+
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
-onResize();
 const gl = canvas.getContext("webgl2");
 twgl.addExtensionsToContext(gl);
-const drawProgram = twgl.createProgramInfo(gl, [textureFrag, fluidFrag]);
+const drawProgram = twgl.createProgramInfo(gl, [textureVert, fluidFrag]);
 const densityTextureOptions = {
   target: gl.TEXTURE_2D,
   wrap: gl.CLAMP_TO_EDGE,
@@ -35,11 +47,14 @@ const densityTextureOptions = {
   internalFormat: gl.R16F,
 };
 let densityFramebuffer: twgl.FramebufferInfo;
-let pathFBO: twgl.FramebufferInfo;
+let attractorIndicator: HTMLDivElement = document.querySelector(
+  ".attractor-indicator"
+);
+let repulserIndicator: HTMLDivElement = document.querySelector(
+  ".repulser-indicator"
+);
 
 const IX = (x: number, y: number) => x + y * settings.gridSize;
-
-init();
 
 class Fluid {
   size: number;
@@ -72,9 +87,9 @@ class Fluid {
 
   addDye(x: number, y: number, amount: number) {
     let dx: number, dy: number;
-    let a = amount / 2 / settings.splatRadius;
-    for (dy = -settings.splatRadius; dy < settings.splatRadius; dy++)
-      for (dx = -settings.splatRadius; dx < settings.splatRadius; dx++) {
+    let a = amount / 2 / settings.emitterSize;
+    for (dy = -settings.emitterSize; dy < settings.emitterSize; dy++)
+      for (dx = -settings.emitterSize; dx < settings.emitterSize; dx++) {
         if (this.density[IX(dx + x, dy + y)] + a < 255) {
           this.density[IX(dx + x, dy + y)] += a;
         }
@@ -133,7 +148,10 @@ class Fluid {
   }
 }
 
-let fluid = new Fluid();
+let fluid: Fluid;
+
+init();
+onResize();
 
 function diffuse(
   b: number,
@@ -286,7 +304,6 @@ function setBounds(b: number, x: number[], N: number) {
 
 function init() {
   // Create quad for 2D scene
-  onResize();
   gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
   gl.bufferData(
     gl.ARRAY_BUFFER,
@@ -302,13 +319,16 @@ function init() {
   );
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   gl.enableVertexAttribArray(0);
-
+  let gridSize = Math.ceil(
+    Math.min(innerWidth / innerHeight) / settings.cellSize
+  );
   densityFramebuffer = twgl.createFramebufferInfo(
     gl,
     [densityTextureOptions],
-    settings.gridSize,
-    settings.gridSize
+    gridSize,
+    gridSize
   );
+
   setupGui();
   createEvents();
 }
@@ -316,13 +336,37 @@ function init() {
 function createEvents() {
   let pressed = false;
   window.addEventListener("resize", onResize);
-  canvas.addEventListener("mousemove", addCursorDye);
+  canvas.addEventListener("mousemove", interactWithSmoke);
+  canvas.addEventListener("mousemove", moveIndicator);
   canvas.addEventListener("mouseup", stopEmitting);
   canvas.addEventListener("mouseleave", stopEmitting);
   canvas.addEventListener("mousedown", startEmitting);
-  canvas.addEventListener("click", addRepulser);
+  canvas.addEventListener("click", onClick);
+  window.addEventListener("keypress", handleKeyboardInput);
 
-  function addCursorDye(e: MouseEvent) {
+  function onClick(e: MouseEvent) {
+    switch (clickAction) {
+      case "attractor":
+        addAttractor(e);
+        break;
+      case "repulser":
+        addRepulser(e);
+        break;
+      case "pillar":
+        addPillar(e);
+        break;
+    }
+    setClickAction("smoke");
+  }
+
+  function moveIndicator(e: MouseEvent) {
+    if (activeIndicator) {
+      activeIndicator.style.setProperty("top", `${e.y}px`);
+      activeIndicator.style.setProperty("left", `${e.x}px`);
+    }
+  }
+
+  function interactWithSmoke(e: MouseEvent) {
     let j = Math.floor(e.offsetX / settings.cellSize);
     let i = Math.floor((canvas.height - e.offsetY) / settings.cellSize);
     fluid.addVelocity(j, i, e.movementX, -e.movementY);
@@ -330,17 +374,25 @@ function createEvents() {
     fluid.addDye(j, i, settings.emissionRate);
   }
 
-  function addRepulser(e: MouseEvent) {
-    if (!e.metaKey) return;
-    let j = Math.floor(e.offsetX / settings.cellSize);
-    let i = Math.floor((canvas.height - e.offsetY) / settings.cellSize);
-    console.log("added repulser");
-    // repulsers.push(new Repulser(j, i, 3, 10, settings));
-    attractors.push(new Attractor(j, i, 70, 5, settings));
+  function handleKeyboardInput(e: KeyboardEvent) {
+    switch (e.key) {
+      case "a":
+        setClickAction("attractor");
+        break;
+      case "r":
+        setClickAction("repulser");
+        break;
+      case "p":
+        setClickAction("pillar");
+        break;
+      case "s":
+        setClickAction("smoke");
+        break;
+    }
   }
 
   function startEmitting() {
-    pressed = true;
+    if (clickAction == "smoke") pressed = true;
   }
 
   function stopEmitting() {
@@ -348,20 +400,67 @@ function createEvents() {
   }
 }
 
+function setClickAction(action: ClickAction) {
+  const elements = [attractorIndicator, repulserIndicator];
+  elements.forEach((el) => el.classList.remove("active"));
+  switch (action) {
+    case "attractor":
+      attractorIndicator.classList.add("active");
+      activeIndicator = attractorIndicator;
+      break;
+    case "repulser":
+      repulserIndicator.classList.add("active");
+      activeIndicator = repulserIndicator;
+      break;
+    case "smoke":
+      activeIndicator = null;
+      break;
+  }
+  clickAction = action;
+}
+
+function addAttractor(e: MouseEvent) {
+  let j = Math.floor(e.offsetX / settings.cellSize);
+  let i = Math.floor((canvas.height - e.offsetY) / settings.cellSize);
+  attractors.push(new Attractor(j, i, settings));
+}
+
+function addRepulser(e: MouseEvent) {
+  let j = Math.floor(e.offsetX / settings.cellSize);
+  let i = Math.floor((canvas.height - e.offsetY) / settings.cellSize);
+  repulsers.push(new Repulser(j, i, settings));
+}
+
+function clearAllObjects() {
+  repulsers = [];
+  attractors = [];
+  pillars = [];
+}
+
+function addPillar(e: MouseEvent) {
+  let j = Math.floor(e.offsetX / settings.cellSize);
+  let i = Math.floor((canvas.height - e.offsetY) / settings.cellSize);
+  pillars.push(new Repulser(j, i, settings));
+  let wX = (e.offsetX / canvas.width) * 2 - 1;
+  let wY = (e.offsetY / canvas.height) * 2 - 1;
+  pillarPoints.push(wX, wY);
+}
+
 function setupGui() {
   let gui = new dat.GUI();
-  gui.add(settings, "cellSize", 1, 20, 1).onChange(reload);
-  gui.add(settings, "timeStep", 0, 1, 0.001);
-  gui.add(settings, "dissipation", 0, 100);
-  gui.add(settings, "viscosity", 0, 0.1, 0.0001);
-  gui.add(settings, "iteration", 1, 25, 1);
-  gui.add(settings, "emissionRate", 0, 10);
-  gui.add(settings, "splatRadius", 1, 25, 1);
-  gui
-    .addColor(settings, "color")
-    .onChange((val) => (settings.fluidColor = val.map((v: number) => v / 255)));
-  gui
-    .add(settings, "blur", 0, 20, 1)
+  let smokeFolder = gui.addFolder("Smoke");
+  smokeFolder.open();
+  smokeFolder.add(settings, "cellSize", 1, 20, 1).onChange(reload);
+  smokeFolder.add(settings, "timeStep", 0, 1, 0.001);
+  smokeFolder.add(settings, "dissipation", 0, 100);
+  smokeFolder.add(settings, "iteration", 1, 25, 1);
+  smokeFolder.add(settings, "emissionRate", 0, 10);
+  smokeFolder.add(settings, "emitterSize", 1, 25, 1);
+  smokeFolder.addColor(settings, "color").onChange((val) => {
+    settings.fluidColor = val.map((v: number) => v / 255);
+  });
+  smokeFolder
+    .add(settings, "blur", 0, 5, 0.1)
     .onChange((val) =>
       document.documentElement.style.setProperty("--canvas-blur", `${val}px`)
     );
@@ -369,6 +468,17 @@ function setupGui() {
     "--canvas-blur",
     `${settings.blur}px`
   );
+  let attractorFolder = gui.addFolder("Attractors");
+  attractorFolder.add(settings, "attractorForce", 0, 50);
+  attractorFolder.add(settings, "attractorRadius", 0, 150, 1);
+  attractorFolder.add(settings, "addAttractor");
+  let repulserFolder = gui.addFolder("Repulsers");
+  repulserFolder.add(settings, "repulserForce", 0, 50);
+  repulserFolder.add(settings, "repulserRadius", 0, 150, 1);
+  repulserFolder.add(settings, "addRepulser");
+
+  gui.add(settings, "clearAllObjects");
+
   return gui;
 }
 
@@ -377,11 +487,11 @@ function onResize() {
   settings.gridSize = Math.ceil(size / settings.cellSize);
   canvas.width = size;
   canvas.height = size;
+  fluid = new Fluid();
 }
 
 function reload() {
   onResize();
-  fluid = new Fluid();
 }
 
 function render(t: number) {
@@ -392,10 +502,25 @@ function render(t: number) {
   twgl.setUniforms(drawProgram, {
     fluidColor: settings.fluidColor,
   });
-  repulsers.forEach((r) => r.applyForce(fluid.Vx, fluid.Vy));
-  attractors.forEach((a) => a.applyForce(fluid.Vx, fluid.Vy));
   fluid.renderDensity();
   fluid.dissipate();
+
+  repulsers.forEach((r) =>
+    r.applyForce(
+      fluid.Vx,
+      fluid.Vy,
+      settings.repulserRadius,
+      settings.repulserForce + (Math.random() * settings.repulserForce) / 2
+    )
+  );
+  attractors.forEach((a) =>
+    a.applyForce(
+      fluid.Vx,
+      fluid.Vy,
+      settings.attractorRadius,
+      settings.attractorForce
+    )
+  );
 }
 
 requestAnimationFrame(render);

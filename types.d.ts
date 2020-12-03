@@ -9,7 +9,14 @@ type SimSettings {
     blur: number,
     emissionRate: number,
     separation: number,
-    splatRadius: number,
+    emitterSize: number,
     color: number[],
     fluidColor: number[],
+    attractorForce: number,
+    attractorRadius: number,
+    repulserForce: number,
+    repulserRadius: number,
+    addRepulser: () => void,
+    addAttractor: () => void,
+    clearAllObjects:() => void
   }
