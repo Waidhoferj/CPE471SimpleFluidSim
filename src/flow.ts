@@ -34,9 +34,10 @@ let repulsers: Repulser[] = [];
 let attractors: Attractor[] = [];
 let pillars: Repulser[] = [];
 let pillarPoints = [1.0, 1.0, 1.0, 1.0];
-
+const errorEl = document.getElementById("error-screen");
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
 const gl = canvas.getContext("webgl2");
+
 twgl.addExtensionsToContext(gl);
 const drawProgram = twgl.createProgramInfo(gl, [textureVert, fluidFrag]);
 const densityTextureOptions = {
@@ -149,9 +150,6 @@ class Fluid {
 }
 
 let fluid: Fluid;
-
-init();
-onResize();
 
 function diffuse(
   b: number,
@@ -522,5 +520,9 @@ function render(t: number) {
     )
   );
 }
-
-requestAnimationFrame(render);
+if (gl) {
+  errorEl.style.setProperty("display", "none");
+  init();
+  onResize();
+  requestAnimationFrame(render);
+}
